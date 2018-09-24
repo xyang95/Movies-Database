@@ -1,0 +1,392 @@
+---
+title: "IMDB database"
+author: "Xing Yang"
+date: "2017/12/4"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(tidyverse)
+library(rvest)
+library(stringr)
+library(RSQLite)
+library(dplyr)
+library(ggplot2)
+library(h2o)
+library(caret)
+```
+
+# Collection data
+
+I uesd css selector to collector data from IMDB, the first thing what I did was just collect one page infomation which contain name, year, director, stars, genre, certificate, gross, rating and introduction. In there, for easy to analysis, I just extracted one genre, one director and two stars from each movie.
+
+```{r}
+get_onpage <- function(genre, page){
+  url <- 'http://www.imdb.com/search/title?genres=%s&explore=genres&sort=boxoffice_gross_us,desc&page=%s&re_=adv_nxt'
+  page <- as.character(page)
+  url <- sprintf(url, URLencode(genre), URLencode(page))
+  imdbsr <- read_html(url)
+  basic <- imdbsr %>%
+  html_nodes(".mode-advanced") %>%
+    purrr::map(function(item) {
+      tibble(
+        name = item %>%
+          html_node(".lister-item-header a") %>%  
+          html_text(trim=T),
+        year = item %>%
+          html_node(".text-muted.unbold") %>%  
+          html_text(trim=T) %>%
+          str_extract("[0-9]{4}") %>%
+          as.numeric(),
+        certificate = item %>%
+          html_node(".certificate") %>%  
+          html_text(trim=T),
+        runtime = item %>%
+          html_node(".runtime") %>%  
+          html_text(trim=T) %>%
+          str_extract("[0-9]+") %>%
+          as.numeric(),
+        genre = item %>% # just got the first genre
+          html_node(".genre") %>%  
+          html_text(trim=T) %>%
+          str_replace_all(",\\s[A-Z]{1}[a-z]+", ""),
+        director = item %>% # also, the first director
+          html_node(".text-muted~ .text-muted+ p , .ratings-bar~ .text-muted+ p") %>%  
+          html_text() %>%
+          str_extract("Director[\\S]*:\n.+\n") %>%
+          unlist() %>%
+          str_replace_all(c(
+            "Director[\\S]*:" = "",
+            "\n" = "",
+            "\\s{2}" = "",
+            "\\|" = "",
+            "," = "")),
+        stars = item %>%
+          html_node(".text-muted~ .text-muted+ p , .ratings-bar~ .text-muted+ p") %>%  
+          html_text() %>%
+          str_extract("((Stars:\n.+\n.+\n)|(Star:\n.+\n))") %>%
+          str_replace_all(c(
+            'Star[\\S]*:' = "",
+            '\n' = "")),
+        rating = item %>%
+          html_node("strong") %>%  
+          html_text(trim=T) %>%
+          as.numeric(),
+        gross = item %>%
+          html_node(".sort-num_votes-visible") %>%
+          html_text() %>%
+          str_extract("Gross:\n.+\n") %>%
+          str_extract("[0-9]+.[0-9]") %>%
+          as.numeric(),
+        metascore = item %>%
+          html_node(".ratings-metascore") %>%  
+          html_text(trim=T) %>%
+          str_extract("[0-9]+") %>%
+          as.numeric(),
+        votes = item %>%
+          html_node(".sort-num_votes-visible") %>%
+          html_text() %>%
+          str_extract("Votes:\n.+\n") %>%
+          str_replace_all(c(
+            "Votes:" = "",
+            "\n" = "",
+            "," = "",
+            "\\s*" = "")) %>%
+          as.numeric(),
+        intro = item %>%
+          html_node(".text-muted+ .text-muted , .ratings-bar+ .text-muted") %>%  
+          html_text(trim=T)
+          )
+    }) %>% bind_rows()
+   return(basic)
+}
+```
+
+Then I writed another function to get mutliple pages.
+
+```{r}
+get_mtp_page_sleep <- function(genre, startpage, endpage){
+  a = matrix(ncol = 12, nrow = 0)
+for (i in startpage : endpage){
+  onepage = get_onpage(genre, page = i)
+  a = rbind(a, onepage)
+  Sys.sleep(1)
+}
+  outcome = as.data.frame(a, stringsAsFactors = FALSE)
+  return(outcome)
+}
+
+get_mtp_page_sleep(genre = "action", startpage = 3, endpage = 4)
+```
+
+So, I got the funtion to extract data from IMDB, then I search movies by genre and make sure the gross woube be lager the 0. Since the different genre has different number of moives, so I searched the different number of pages for differnet genre and the final page should be that gross is equla to zero. 
+
+```{r}
+#diferent pages for different genre
+page_65 <- c("comedy", "drama")
+page_40 <- c("action", "crime", "romance", "thriller")
+page_25 <- c("adventure")
+page_20 <- c("fantasy", "sci_fi", "horror", "family", "documentary", "mystery")
+page_15 <- c("music", "biography")
+page_10 <- c("history", "war", "animation", "sport")
+page_4 <- c("western")
+
+movie_65 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_65)){
+  a <- get_mtp_page_sleep(genre = page_65[i], startpage = 1, endpage = 65)
+  movie_65 <- rbind(movie_65, a)
+}
+
+movie_40 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_40)){
+  a <- get_mtp_page_sleep(genre = page_40[i], startpage = 1, endpage = 40)
+  movie_40 <- rbind(movie_40, a)
+}
+
+movie_25 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_25)){
+  a <- get_mtp_page_sleep(genre = page_25[i], startpage = 1, endpage = 25)
+  movie_25 <- rbind(movie_25, a)
+}
+
+movie_20 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_20)){
+  a <- get_mtp_page_sleep(genre = page_20[i], startpage = 1, endpage = 20)
+  movie_20 <- rbind(movie_20, a)
+}
+
+movie_15 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_15)){
+  a <- get_mtp_page_sleep(genre = page_15[i], startpage = 1, endpage = 15)
+  movie_15 <- rbind(movie_15, a)
+}
+
+movie_10 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_10)){
+  a <- get_mtp_page_sleep(genre = page_10[i], startpage = 1, endpage = 10)
+  movie_10 <- rbind(movie_10, a)
+}
+
+movie_4 <- matrix(ncol = 12, nrow = 0)
+for(i in 1:length(page_4)){
+  a <- get_mtp_page_sleep(genre = page_4[i], startpage = 1, endpage = 4)
+  movie_4 <- rbind(movie_4, a)
+}
+
+#combinded these dataframe together and delete the same rows. 
+movie_duplicated <- as.data.frame(rbind(movie_65, movie_40, movie_4, movie_25, movie_20, movie_15, movie_10))
+movie_stars <- movie_duplicated[!duplicated(movie_duplicated[c("intro")]), ]
+
+#separet star into star1 and star2
+movies <- movie_stars %>%
+  filter(gross > 1) %>%
+  separate(stars, into = c("star1", "star2", "delete"), sep = ",\\s") %>%
+  select(-delete)
+
+#clean data 
+movies$genre <- str_replace_all(movies$genre, c("-Fi" = "", "-Noir" = ""))
+movies$certificate[which(is.na(movies$certificate))] <- "Unrated"
+movies$certificate[which(movies$certificate == "Not Rated")] <- "Unrated"
+movies$certificate[which(movies$certificate == "PG")] <- "M/PG"
+movies$certificate[which(movies$certificate == "M")] <- "M/PG"
+movies$certificate[which(movies$certificate == "Approved")] <- "Passed"
+head(movies)
+
+#save data 
+write.csv(movies, file = "/Users/xingyang/Desktop/5020/movies.csv")
+```
+
+# Storing data
+
+I stored data into NoSQL, and the primary key is name, year, director. 
+
+```{r}
+#save data into database
+db <- dbConnect(SQLite(),dbname="project.sqlite")
+dbGetQuery(db, "CREATE TABLE movies(
+           name TEXT,
+           year INTEGER,
+           certificate TEXT,
+           runtime INTEGER,
+           genre TEXT,
+           director TEXT,
+           star1 TEXT,
+           star2 TEXT,
+           rating NUMERIC,
+           gross NUMERIC,
+           metascore INTEGER,
+           votes INTEGER,
+           intro TEXT,
+           PRIMARY KEY (name, year, director)
+           )")
+dbWriteTable(db, "movies", movies, append=TRUE, row.names=FALSE)
+#dbRemoveTable(db, "movies")
+```
+
+# Retrieve data 
+
+In there, I wrote some functions to retrieve data use SQL expression, I also used dplyr to retrieve data. 
+
+```{r}
+#Q1: which movie does have the highest boxffice
+query <- "SELECT name, year, director, gross, rating, star1, star2
+          FROM movies
+          ORDER BY gross DESC
+          LIMIT 3;"
+dbGetQuery(db, query)
+
+average_best <- function(type, best){
+  dbGetQuery(db, query <- str_c("SELECT ", type, ", AVG(",best,") FROM movies GROUP BY ", type, " ORDER BY AVG(",best,") DESC LIMIT 1"))}
+
+#Q2: Who is the highest average box office director?
+average_best('director', 'gross')
+
+#Q3: Who is the highest average rating star?
+average_best('star1', 'rating')
+average_best('star2', 'rating')
+
+#Q4: Which genre of movie did get the higest average runtime?
+average_best('genre', 'runtime')
+
+#Q5: Which type of certificate did has the higest average vote?
+average_best('certificate', 'votes')
+
+#Q6: Which movies did get the rating larger than 9
+movies %>%
+  filter(rating > 9) %>%
+  select(name, year, rating, gross, intro)
+
+#select movie function
+movie_type_best <- function(type, best){
+  dbGetQuery(db, query <- str_c("SELECT name, ", type, ", MAX(",best,") FROM movies GROUP BY ", type, " ORDER BY MAX(",best,") DESC LIMIT 10"))}
+
+#Q7: Which movie is the highest box office for each genre?
+movie_type_best(type = 'genre', best = 'gross')
+
+#Q8: Which movie is the highest runtime for each certificate? 
+movie_type_best(type = 'certificate', best = 'runtime')
+
+#Q9: Which movie is the highest rating for each star? 
+movie_type_best(type = 'star1', best = 'rating')
+movie_type_best(type = 'star2', best = 'rating')
+
+#Q10: Which movie is the highest vote for each year?
+movie_type_best(type = 'year', best = 'rating')
+
+type_best <- function(type, best){
+  dbGetQuery(db, query <- str_c("SELECT ", type, ", MAX(",best,") FROM movies GROUP BY ", type, " ORDER BY MAX(",best,") DESC LIMIT 1"))}
+
+#Q11: Which year does have the highest box office?
+type_best(type = 'year', best = 'gross')
+
+#Q12: Which genre does get the highest votes?
+type_best(type = 'genre', best = 'votes')
+
+#Q13: Which certificate does have the most number of movies?
+movies %>%
+  count(certificate) %>%
+  arrange(desc(n)) %>%
+  head(1)
+```
+
+# Visualiztion
+
+```{r}
+#the total gross trend from 1990 
+movies %>% 
+  group_by(year) %>% 
+  summarise(total_gross = sum(gross)) %>%
+  filter(year >= 1990, total_gross > 1000) %>%
+  ggplot(aes(year, total_gross)) +
+    geom_point() +
+    geom_smooth(method = "loess", se = F) +
+    ggtitle("The Trend of Total Gross")
+
+#the total gross over 1000 trend from 1990 for each genre
+movies %>% 
+  group_by(year, genre) %>% 
+  summarise(total_gross = sum(gross)) %>%
+  filter(year >= 1990, total_gross > 500) %>%
+  ggplot(aes(year, total_gross, color = genre)) +
+    geom_line() +
+    ggtitle("The Gross Trend for Each Genre")
+
+#the number of movie for each genre
+ggplot(movies, aes(genre, fill = genre)) + 
+  geom_bar() +
+  theme_bw() +
+  ggtitle("The Number of Movies for Each Genre")
+
+#the number of movie for each certificate
+ggplot(movies %>% filter(year == 2010), aes(certificate, fill = certificate)) + 
+  geom_bar() +
+  theme_bw() +
+  ggtitle("The Number of Movies for Each Certificate")
+
+#the relationship between rating and gross from 1990
+ggplot(data = filter(movies, year >= 1990), aes(rating, gross, color = genre)) +
+  geom_point() + 
+  theme_bw() +
+  ggtitle("The Realtionship Between Rating and Gross from 1990")
+
+#the runtime distribution
+ggplot(data = subset(movies, !is.na(certificate)) %>% filter(year >= 2000), aes(runtime, fill = certificate)) +
+  geom_histogram(binwidth = 1) +
+  theme_bw() +
+  ggtitle("The Distribution of Runtime")
+
+#the number of movies released from 1990
+ggplot(movies %>% filter(year >= 1990), aes(year, fill = genre)) + 
+  geom_bar() +
+  theme_bw() +
+  ggtitle("The Number of Movies Released from 1990")
+
+#the distribution of metascore from 2000
+ggplot(movies %>% filter(year >= 2000), aes(metascore, fill = genre)) + 
+  geom_histogram(binwidth = 1) +
+  theme_bw() +
+  ggtitle("The Distribution of Metasocre from 2000")
+```
+
+# Analysis
+
+I bulit a random forest to predcit the gross.
+
+```{r}
+#movies <- read.csv(file = "/Users/xingyang/Desktop/5020/movies.csv")
+h2o.init(nthreads = -1)
+rfmovies <- movies %>%
+  select(-name, -director, -star1, -star2, -intro) %>%
+  filter(year >= 1990) 
+rfmovies$year = as.factor(rfmovies$year)
+rfmovies$certificate = as.factor(rfmovies$certificate)
+rfmovies$genre = as.factor(rfmovies$genre)
+
+set.seed(1)
+indxTrain <- createDataPartition(y = rfmovies$gross, p = 0.7,list = FALSE)
+train <- rfmovies[indxTrain,]
+test <- rfmovies[-indxTrain,]
+training <- as.h2o(train)
+testing <- as.h2o(test)
+
+x <- names(rfmovies)[-6]
+y <- "gross"
+rf <- h2o.randomForest(x = x,
+                       y = y, 
+                       model_id = "rf_features",
+                       training_frame = training,
+                       ntrees = 300,
+                       seed = 1)
+rf_pred <- h2o.predict(rf, testing)
+test$pred <- as.vector(rf_pred)
+ggplot(test, aes(gross, pred)) +
+  geom_smooth(method = "gam", se = F, col = "red")+
+  geom_point(size=0.1)+
+  geom_abline(col = "blue") +
+  coord_fixed()
+```
+
+From above,  I think my outcome is good to predict gross. 
